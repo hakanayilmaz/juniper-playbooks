@@ -1,5 +1,5 @@
 ---
-- name: 🔍 Extract ae0 VLAN/IP info using correct XPath (rpc-reply → data → configuration)
+- name: 
   hosts: all
   connection: netconf
   gather_facts: no
@@ -9,10 +9,10 @@
 
   vars:
     iface: "ae0"
-    vlanx: 2811
+    base_path: "/rpc-reply/data/configuration/interfaces/interface/unit"
 
   tasks:
-    - name: Run NETCONF get-configuration RPC with subtree filter
+    - name: Get interface config via NETCONF
       ansible.netcommon.netconf_get:
         filter: |
           <configuration>
@@ -24,54 +24,121 @@
           </configuration>
         display: xml
       register: rpc_result
+      failed_when: false
 
-    - name: Extract IPv4 addresses
+    - name: Fail if RPC failed or empty
+      fail:
+        msg: "❌ NETCONF RPC failed or empty for {{ iface }}"
+      when:
+        - rpc_result is not defined
+        - rpc_result.failed or (rpc_result.output | length == 0)
+
+    # 1️⃣ Tüm unit adları (tam liste)
+    - name: All unit names (baseline)
       community.general.xml:
         xmlstring: "{{ rpc_result.output }}"
-        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/family/inet/address/name"
+        xpath: "{{ base_path }}/name"
         content: text
-      register: ipv4_list
+      register: unit_names_raw
 
-    - name: Extract IPv6 addresses
+    # 2️⃣ VLAN-id’si olan unit adları + değerleri
+    - name: Units that have vlan-id (names)
       community.general.xml:
         xmlstring: "{{ rpc_result.output }}"
-        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/family/inet6/address/name"
+        xpath: "{{ base_path }}[vlan-id]/name"
         content: text
-      register: ipv6_list
+      register: vlan_names_raw
 
-    - name: Extract VLAN IDs
+    - name: VLAN-id values (aligned with previous names)
       community.general.xml:
         xmlstring: "{{ rpc_result.output }}"
-        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/vlan-id"
+        xpath: "{{ base_path }}/vlan-id"
         content: text
-      register: vlan_list
+      register: vlan_values_raw
 
-    - name: Extract unit names
+    # 3️⃣ Description’ı olan unit adları + değerleri
+    - name: Units that have description (names)
       community.general.xml:
         xmlstring: "{{ rpc_result.output }}"
-        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/name"
+        xpath: "{{ base_path }}[description]/name"
         content: text
-      register: unit_list
+      register: desc_names_raw
 
-    - name: vlan_list bastir amk
-      debug:
-       var: vlan_list.matches
+    - name: Description values (aligned with previous names)
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "{{ base_path }}/description"
+        content: text
+      register: desc_values_raw
 
-    - name: Combine VLAN and IP data
+    # 4️⃣ IPv4 olan unit adları + değerleri
+    - name: Units that have IPv4 (names)
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "{{ base_path }}[family/inet/address/name]/name"
+        content: text
+      register: ipv4_names_raw
+
+    - name: IPv4 values (first address per unit; aligned with previous names)
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "{{ base_path }}/family/inet/address/name[1]"
+        content: text
+      register: ipv4_values_raw
+
+    # 5️⃣ IPv6 olan unit adları + değerleri
+    - name: Units that have IPv6 (names)
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "{{ base_path }}[family/inet6/address/name]/name"
+        content: text
+      register: ipv6_names_raw
+
+    - name: IPv6 values (first address per unit; aligned with previous names)
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "{{ base_path }}/family/inet6/address/name[1]"
+        content: text
+      register: ipv6_values_raw
+
+    # --- Ham listeleri düz string listelere indir ---
+    - name: Normalize raw lists to plain string arrays
       set_fact:
-        vlan_info: "{{ unit_list.matches | zip(vlan_list.matches, ipv4_list.matches, ipv6_list.matches) | list }}"
+        all_units: "{{ unit_names_raw.matches | map(attribute='name') | list }}"
+        vlan_names: "{{ vlan_names_raw.matches | map(attribute='name') | list }}"
+        vlan_vals:  "{{ vlan_values_raw.matches | map(attribute='vlan-id') | list }}"
+        desc_names: "{{ desc_names_raw.matches | map(attribute='name') | list }}"
+        desc_vals:  "{{ desc_values_raw.matches | map(attribute='description') | list }}"
+        ipv4_names: "{{ ipv4_names_raw.matches | map(attribute='name') | list }}"
+        ipv4_vals:  "{{ ipv4_values_raw.matches | map(attribute='name') | list }}"
+        ipv6_names: "{{ ipv6_names_raw.matches | map(attribute='name') | list }}"
+        ipv6_vals:  "{{ ipv6_values_raw.matches | map(attribute='name') | list }}"
 
-    - name: vlan_list 0. elemanını ve tipini göster
-      debug:
-        msg: >
-          Eleman: {{ vlan_list.matches[0] | string }}
-          | Tip: {{ vlan_list.matches[0] | type_debug }}
-
-      # once vlanx i stringe cevir cunku int olabilir, matches bi list ama elemanlar dict
-      # map le biz bu dict in vlan-id elemanlarini alioz. 
-      # normalde {'vlan-id'} : {'7'}
-    - name: VLAN var mı yok mu kontrol et
+    # --- Unit→value map'leri (items2dict ile) ---
+    - name: Build per-field maps keyed by unit name
       set_fact:
-        vlan_exists: "{{ vlanx | string in (vlan_list.matches | map(attribute='vlan-id') | list) }}"
-    - debug: 
-        msg: "VLAN {{vlanx}} mevcut mu? {{ vlan_exists }}"
+        vlan_map: "{{ (vlan_names | zip(vlan_vals) | map('list') | list) | items2dict(key_name=0, value_name=1) }}"
+        desc_map: "{{ (desc_names | zip(desc_vals) | map('list') | list) | items2dict(key_name=0, value_name=1) }}"
+        ipv4_map: "{{ (ipv4_names | zip(ipv4_vals) | map('list') | list) | items2dict(key_name=0, value_name=1) }}"
+        ipv6_map: "{{ (ipv6_names | zip(ipv6_vals) | map('list') | list) | items2dict(key_name=0, value_name=1) }}"
+
+    # --- Nihai tablo ---
+    - name: Assemble aligned vlan_info (no per-unit module loop)
+      set_fact:
+        vlan_info: >-
+          {%- set out = [] -%}
+          {%- for u in all_units -%}
+            {%- set rec = {
+              'unit': u,
+              'vlan-id': vlan_map.get(u, ''),
+              'description': desc_map.get(u, ''),
+              'ipv4_subnet': ipv4_map.get(u, ''),
+              'ipv6_subnet': ipv6_map.get(u, '')
+            } -%}
+            {%- if out.append(rec) %}{% endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Display aligned VLAN/IP table
+      debug:
+        msg: "{{ vlan_info  }}"
