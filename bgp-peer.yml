@@ -1,0 +1,114 @@
+---
+- name: 🔍 Check if ASN has a BGP peer using the correct policy (IPv4 only)
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  collections:
+    - junipernetworks.junos
+    - community.general
+
+  vars_prompt:
+    - name: "customer_asn"
+      prompt: "Enter Transit ASN (e.g. 58075)"
+      private: no
+
+  tasks:
+    - name: Get BGP neighbor info (in XML)
+      junipernetworks.junos.junos_rpc:
+        rpc: get-bgp-neighbor-information
+      register: bgp_data
+      ignore_errors: yes
+
+    - name: Extracting all peers for given ASN (IPv4 + jttransit only groups)
+      community.general.xml:
+        xmlstring: "{{ bgp_data.xml | default('') }}"
+        content: text
+        xpath: "/rpc-reply/bgp-information/bgp-peer[
+                  peer-as='{{ customer_asn }}'
+                  and contains(bgp-option-information/address-families, 'inet-unicast')
+                  and starts-with(peer-group, 'jttransit')
+                ]/bgp-option-information/import-policy"
+      register: import_policy
+      failed_when: false
+      changed_when: false
+
+    # === SAFE CLEANUP ===
+    - name: Clean and analyze policy data safely
+      set_fact:
+        import_policy_clean: >-
+          {{
+            (import_policy.matches | default([]))
+            | map(attribute='import-policy')
+            | map('regex_replace', '\\s+', ' ')
+            | map('trim')
+            | list
+            | unique
+          }}
+        expected_policy: "AS{{ customer_asn }}-policy-v4"
+        has_any_peer: "{{ (import_policy.matches | default([])) | length > 0 }}"
+        has_standard_policy: >-
+          {{
+            (
+              (import_policy.matches | default([]))
+              | map(attribute='import-policy')
+              | map('regex_replace', '\\s+', ' ')
+              | map('trim')
+              | select('search', 'AS' + customer_asn + '-policy-v4')
+              | list
+              | length
+            ) > 0
+          }}
+        current_policy_value: >-
+          {{
+            (
+              (import_policy.matches | default([]))
+              | map(attribute='import-policy')
+              | map('regex_replace', '\\s+', ' ')
+              | map('trim')
+              | select('search', 'AS' + customer_asn + '-policy-v4')
+              | list
+              | first
+            ) | default('none')
+          }}
+
+    # === REGISTER POLICY INFO (for later use) ===
+    - name: Save router policy status
+      set_fact:
+        router_policy_status: >-
+          {{
+            router_policy_status | default({}) | combine({
+              inventory_hostname: {
+                'asn': customer_asn,
+                'expected_policy': expected_policy,
+                'current_policy': current_policy_value,
+                'policy_found': has_standard_policy
+              }
+            })
+          }}
+
+    # === OUTPUT ===
+    - name: ✅ Message 1 — ASN found or not
+      debug:
+        msg: >-
+          {% if has_any_peer %}
+            ✅ ASN {{ customer_asn }} found as BGP peer in jttransit* groups
+          {% else %}
+            ❌ ASN {{ customer_asn }} not found in any jttransit* IPv4 peers.
+          {% endif %}
+
+    - name: 📜 Message 2 — Standard Policy check
+      when: has_any_peer
+      debug:
+        msg: >-
+          {% if has_standard_policy %}
+            ✅ Expected policy {{ expected_policy }} found.
+          {% else %}
+            ⚠️ ASN {{ customer_asn }} exists but expected policy {{ expected_policy }} NOT found.
+            Current policies: {{ import_policy_clean | default([]) }}
+          {% endif %}
+
+    - name: 🧾 Message 3 — Registered policy variable
+      when: has_standard_policy
+      debug:
+        var: router_policy_status

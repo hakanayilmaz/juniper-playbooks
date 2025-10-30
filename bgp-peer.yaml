@@ -1,0 +1,91 @@
+---
+- name: 🔍 Check BGP neighbor (jttransit* groups) + import-policy for given ASN (IPv4 only)
+  hosts: all
+  gather_facts: no
+  connection: local
+
+  collections:
+    - junipernetworks.junos
+    - community.general
+
+  vars:
+    customer_asn: 58075
+
+  tasks:
+    - name: Get BGP neighbor info (XML)
+      junipernetworks.junos.junos_rpc:
+        rpc: get-bgp-neighbor-information
+      register: bgp_data
+      ignore_errors: yes
+
+    # === IPv4 + jttransit* peer ===
+    - name: Extract peer-state for ASN in jttransit* groups (IPv4 only)
+      community.general.xml:
+        xmlstring: "{{ bgp_data.xml | default('') }}"
+        content: text
+        xpath: "/rpc-reply/bgp-information/bgp-peer[
+                  peer-as='{{ customer_asn }}'
+                  and contains(bgp-option-information/address-families, 'inet-unicast')
+                  and starts-with(peer-group, 'jttransit')
+                ]/peer-state"
+      register: peer_state
+      failed_when: false
+      changed_when: false
+
+    - name: Extract import-policy for ASN in jttransit* groups (IPv4 only)
+      community.general.xml:
+        xmlstring: "{{ bgp_data.xml | default('') }}"
+        content: text
+        xpath: "/rpc-reply/bgp-information/bgp-peer[
+                  peer-as='{{ customer_asn }}'
+                  and contains(bgp-option-information/address-families, 'inet-unicast')
+                  and starts-with(peer-group, 'jttransit')
+                ]/bgp-option-information/import-policy"
+      register: import_policy
+      failed_when: false
+      changed_when: false
+
+    - name: Clean values
+      set_fact:
+        import_policy_value: >-
+          {{ (import_policy.matches[0]['import-policy']
+              | default('')
+              | replace('\n','')
+              | replace('\r','')
+              | replace('\t','')
+              | trim
+              | split()
+              | first)
+              if (import_policy.matches is defined and import_policy.matches|length > 0)
+              else 'none' }}
+        peer_state_value: >-
+          {{ (peer_state.matches[0]['peer-state']
+              | default('')
+              | replace('\n','')
+              | replace('\r','')
+              | replace('\t','')
+              | trim
+              | split()
+              | first)
+              if (peer_state.matches is defined and peer_state.matches|length > 0)
+              else 'none' }}
+
+    # === OUTPUT ===
+    - name: ✅ Message 1 — ASN found or not
+      debug:
+        msg: >-
+          {% if (peer_state.matches is defined and peer_state.matches|length > 0) %}
+            ✅ ASN {{ customer_asn }} found in jttransit* group(s)
+          {% else %}
+            ❌ ASN {{ customer_asn }} not found in any jttransit* IPv4 peers.
+          {% endif %}
+
+    - name: 📡 Message 2 — Peer-State
+      when: peer_state.matches is defined and peer_state.matches | length > 0
+      debug:
+        msg: "Peer-State: {{ peer_state_value }}"
+
+    - name: 📜 Message 3 — Import-Policy
+      when: peer_state.matches is defined and peer_state.matches | length > 0
+      debug:
+        msg: "Import-Policy: {{ import_policy_value }}"

@@ -1,0 +1,61 @@
+---
+- name: 🔍 Extract ae0 VLAN/IP info using correct XPath (rpc-reply → data → configuration)
+  hosts: all
+  connection: netconf
+  gather_facts: no
+  collections:
+    - ansible.netcommon
+    - community.general
+
+  vars:
+    iface: "ae0"
+
+  tasks:
+    - name: Run NETCONF get-configuration RPC with subtree filter
+      ansible.netcommon.netconf_get:
+        filter: |
+          <configuration>
+            <interfaces>
+              <interface>
+                <name>{{ iface }}</name>
+              </interface>
+            </interfaces>
+          </configuration>
+        display: xml
+      register: rpc_result
+
+    - name: Extract IPv4 addresses
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/family/inet/address/name"
+        content: text
+      register: ipv4_list
+
+    - name: Extract IPv6 addresses
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/family/inet6/address/name"
+        content: text
+      register: ipv6_list
+
+    - name: Extract VLAN IDs
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/vlan-id"
+        content: text
+      register: vlan_list
+
+    - name: Extract unit desc
+      community.general.xml:
+        xmlstring: "{{ rpc_result.output }}"
+        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/description"
+        content: text
+      register: unit_list
+
+    - name: Combine VLAN and IP data
+      set_fact:
+        vlan_info: "{{ unit_list.matches | zip(vlan_list.matches, ipv4_list.matches, ipv6_list.matches) | list }}"
+
+    - name: Display structured VLAN/IP information
+      debug:
+        msg: "{{ vlan_info }}"
