@@ -2,12 +2,18 @@
 
 # Juniper Playbooks
 
-A collection of Ansible playbooks for automating Juniper routers and switches.
+A modular collection of **Ansible** playbooks and **Jinja2** templates for automating 
+BGP and routing configuration on Juniper devices.  
 
-## Overview
-This repository includes:
-- **vlan-check.yml:** Validate VLAN presence and state on Junos interfaces.
-- **peer-check.yml:** Check BGP peers and import policies.
+The project focuses on:
+- Automated generation of **transit and peering configurations**
+- **RPC-based validation** of BGP, interface, and policy state
+- Integration with **NetBox** or dynamic inventory systems
+- Safe and repeatable **commit workflows** for Junos routers
+
+These playbooks simplify day-to-day operations by turning manual config and verification tasks 
+into fully automated processes.
+
 
 ## Requirements
 - Python 3
@@ -15,5 +21,4 @@ This repository includes:
 - Juniper.junos Ansible collection
 
 ## Usage
-ansible-playbook -i inventory vlan-check.yml
-
+ansible-playbook -i inventory transit-bgp.yml
