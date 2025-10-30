@@ -9,6 +9,7 @@
 
   vars:
     iface: "ae0"
+    vlanx: 2811
 
   tasks:
     - name: Run NETCONF get-configuration RPC with subtree filter
@@ -45,17 +46,32 @@
         content: text
       register: vlan_list
 
-    - name: Extract unit desc
+    - name: Extract unit names
       community.general.xml:
         xmlstring: "{{ rpc_result.output }}"
-        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/description"
+        xpath: "/rpc-reply/data/configuration/interfaces/interface/unit/name"
         content: text
       register: unit_list
+
+    - name: vlan_list bastir amk
+      debug:
+       var: vlan_list.matches
 
     - name: Combine VLAN and IP data
       set_fact:
         vlan_info: "{{ unit_list.matches | zip(vlan_list.matches, ipv4_list.matches, ipv6_list.matches) | list }}"
 
-    - name: Display structured VLAN/IP information
+    - name: vlan_list 0. elemanını ve tipini göster
       debug:
-        msg: "{{ vlan_info }}"
+        msg: >
+          Eleman: {{ vlan_list.matches[0] | string }}
+          | Tip: {{ vlan_list.matches[0] | type_debug }}
+
+      # once vlanx i stringe cevir cunku int olabilir, matches bi list ama elemanlar dict
+      # map le biz bu dict in vlan-id elemanlarini alioz. 
+      # normalde {'vlan-id'} : {'7'}
+    - name: VLAN var mı yok mu kontrol et
+      set_fact:
+        vlan_exists: "{{ vlanx | string in (vlan_list.matches | map(attribute='vlan-id') | list) }}"
+    - debug: 
+        msg: "VLAN {{vlanx}} mevcut mu? {{ vlan_exists }}"
