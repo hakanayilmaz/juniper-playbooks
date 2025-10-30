@@ -1,3 +1,142 @@
+# Junos’ta her unit bunların hepsine sahip olmayabiliyor:
+
+# bazı unit’lerde description yok,
+
+# bazılarında sadece IPv4 var, IPv6 yok,
+
+# bazı unit’lerde hiç IP yok.
+
+# eğer hepsini tek community.general.xml çağrısıyla çekersen,
+# modül o node’u hiç bulamadığı unit’leri atlıyor.
+# bu da index kaymasına neden oluyor (yani yanlış VLAN yanlış IP ile eşleşiyor).
+
+# çözüm:
+# her alanı kendi XPath’iyle çekiyoruz (yani sadece o field varsa dönüyor),
+# ve sonunda unit name’leriyle hizalayarak düzgün dict’e çeviriyoruz.
+
+# ⚙️ Şimdi adım adım ne oluyor:
+# 1️⃣ NETCONF ile config’i çek
+# - name: Get interface config via NETCONF
+
+
+# router’a get-configuration RPC atıyor.
+# sana komple <interface><name>ae0</name>...<unit>...</unit></interface> XML’ini getiriyor.
+# tek istek, hızlı.
+
+# 2️⃣ unit isimlerini çıkar
+# - name: All unit names (baseline)
+#   xpath: "/.../unit/name"
+
+
+# bütün unit’lerin numaralarını (7, 62, 121 vs.) alıyoruz.
+# bu, ana “iskelet” oluyor — her şey buna göre hizalanacak.
+
+# 3️⃣ VLAN-ID’li unit’leri bul
+# - name: Units that have vlan-id (names)
+#   xpath: "/.../unit[vlan-id]/name"
+
+
+# sadece VLAN’ı olan unit’lerin adlarını döndürüyor.
+# örneğin unit 7 ve unit 62 döner.
+
+# ardından:
+
+# - name: VLAN-id values
+#   xpath: "/.../unit/vlan-id"
+
+
+# her VLAN unit’in kendi <vlan-id> içindeki sayıyı alıyorum (örneğin 7, 62).
+
+# 4️⃣ Description olanları bul
+# - name: Units that have description (names)
+#   xpath: "/.../unit[description]/name"
+
+
+# description olan unit’lerin adları gelir.
+# aynı sırayla, hemen altındaki description tag’ından açıklamayı alıyorum.
+
+# 5️⃣ IPv4 ve IPv6 olanları bul
+
+# benzer mantık:
+
+# /unit[family/inet/address/name]/name → IPv4 olan unit adları
+
+# /unit/family/inet/address/name[1] → her birinin ilk IPv4 adresi
+
+# /unit[family/inet6/address/name]/name → IPv6 olan unit adları
+
+# /unit/family/inet6/address/name[1] → her birinin ilk IPv6 adresi
+
+# bunlar ayrı ayrı listeler çünkü bazı unit’lerde IPv6 var, bazılarında yok.
+
+# 6️⃣ Hepsini sade listeye çeviriyorum
+
+# community.general.xml modülü çıktıyı hep matches listesi içinde dict olarak döndürür ({'name': 'ae0'} gibi).
+# o yüzden şu satırla:
+
+# set_fact:
+#   vlan_names: "{{ vlan_names_raw.matches | map(attribute='name') | list }}"
+
+
+# ben onu sade Python listesine dönüştürüyorum:
+
+# ["7", "62", "121", ...]
+
+# 7️⃣ Unit adını anahtar yapıyoruz
+
+# artık her field için şöyle bir dict oluşturuyoruz:
+
+# vlan_map:
+#   "7": "7"
+#   "62": "62"
+# desc_map:
+#   "7": "Peering: Xx"
+# ipv4_map:
+#   "7": "193.239.321.222/22"
+# ipv6_map:
+#   "7": "2001:7f8:13::a502:562:1/64"
+
+# bunlar items2dict filtresiyle oluşuyor.
+
+# 8️⃣ Son adım: hepsini tek dict’e topla
+
+# şimdi all_units listesindeki her unit için bakıyoruz:
+
+# varsa VLAN-ID → al
+
+# yoksa boş bırak
+
+# varsa IPv4 → al
+
+# yoksa boş bırak
+# vs.
+
+# sonuç:
+
+# [
+#   {
+#     "unit": "7",
+#     "vlan-id": "7",
+#     "description": "Peering: XXXX",
+#     "ipv4_subnet": "193.239.116.2/22",
+#     "ipv6_subnet": "2001:7f8:13::a502:532:1/64"
+#   },
+#   {
+#     "unit": "62",
+#     "vlan-id": "62",
+#     "description": "Cust: JT-XX-XX",
+#     "ipv4_subnet": "213.207.33.1/25",
+#     "ipv6_subnet": "2a02:10:0:13::1/64"
+#   }
+# ]
+
+
+# Get interface config  XML’i router’dan alıyor Tek RPC çağrısı
+# All unit names  Tüm unit ID’leri  Ana referans
+# vlan-id, description, ipv4, ipv6  Her field için sadece olanları alıyor Eksik field olursa hizayı bozmamak için
+# map oluşturma Unit → value eşlemesi Lookup kolay olsun
+# Son set_fact  Tümünü tek dict listede birleştiriyor JSON formatında çıktı üretmek için
+
 ---
 - name: 
   hosts: all
